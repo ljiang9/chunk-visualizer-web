@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>chunk-visualizer-web · 切分效果可视化</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --line: #e2e5ea;
+    --text: #1f2329;
+    --muted: #6b7280;
+    --accent: #2f6fed;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .panel {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  textarea {
+    width: 100%; height: 110px; padding: 10px; border: 1px solid var(--line);
+    border-radius: 8px; font-size: 14px; resize: vertical; font-family: inherit;
+  }
+  .controls { display: flex; gap: 24px; flex-wrap: wrap; align-items: center; }
+  .ctrl { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .ctrl label { color: var(--muted); }
+  .ctrl b { color: var(--accent); }
+  input[type=range] { width: 220px; }
+  button {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 9px 18px; font-size: 14px; cursor: pointer;
+  }
+  .legend { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: middle; margin: 0 4px 0 12px; }
+  .chunk {
+    border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; font-size: 14px;
+    line-height: 1.9; word-break: break-all; border: 1px solid transparent;
+  }
+  .chunk .meta { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .ovl { background: rgba(255, 170, 0, .45); border-bottom: 2px dashed #e08a00; padding: 0 1px; }
+  .badge { font-size: 11px; background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; margin-left: 6px; }
+  .count { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+</style>
+</head>
+<body>
+  <h1>切分效果可视化</h1>
+  <div class="sub">粘贴文本，调整块大小与重叠，实时查看切分边界与重叠部分（橙色高亮 = 与下一块重叠的区域）。</div>
+
+  <div class="panel">
+    <div class="ctrl" style="margin-bottom:12px;">
+      <label>输入文本</label>
+      <textarea id="text"></textarea>
+    </div>
+    <div class="controls">
+      <div class="ctrl">
+        <label>块大小 chunk_size = <b id="sizeVal">60</b></label>
+        <input type="range" id="size" min="10" max="200" value="60">
+      </div>
+      <div class="ctrl">
+        <label>重叠 overlap = <b id="overlapVal">15</b></label>
+        <input type="range" id="overlap" min="0" max="100" value="15">
+      </div>
+      <button id="renderBtn">重新切分</button>
+    </div>
+    <div class="legend">
+      <span class="swatch" style="background:#cfe0ff"></span>普通块内容
+      <span class="swatch" style="background:rgba(255,170,0,.45)"></span>与下一块重叠的字符（重复出现）
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="count" id="count"></div>
+    <div id="out"></div>
+  </div>
+
+<!-- CHUNK_LOGIC_BEGIN -->
+<script>
+// ===== 纯函数：切分逻辑（被 Node 测试提取并断言，请勿依赖 DOM）=====
+function chunkText(text, size, overlap) {
+  if (!Number.isInteger(size) || size <= 0) throw new Error("chunk_size 必须为正整数");
+  if (!Number.isInteger(overlap) || overlap < 0) throw new Error("overlap 必须 >= 0");
+  if (overlap >= size) throw new Error("overlap 必须小于 chunk_size");
+  text = (text || "").replace(/\s+$/, "");
+  var n = text.length;
+  if (n === 0) return [];
+  var step = size - overlap;
+  var chunks = [];
+  var start = 0;
+  while (start < n) {
+    var end = Math.min(start + size, n);
+    // 本块末尾与下一块重叠的起点（若还有下一块）
+    var overlapStart = (end < n) ? Math.max(start, end - overlap) : end;
+    chunks.push({ start: start, end: end, text: text.slice(start, end), overlapStart: overlapStart });
+    if (end === n) break;
+    start += step;
+  }
+  return chunks;
+}
+// ===== CHUNK_LOGIC_END =====
+
+var PALETTE = ["#cfe0ff", "#d6f5d6", "#ffe0c7", "#ead6ff", "#ffd6e0", "#d6f0f5"];
+
+function render() {
+  var text = document.getElementById("text").value;
+  var size = parseInt(document.getElementById("size").value, 10);
+  var overlap = parseInt(document.getElementById("overlap").value, 10);
+  document.getElementById("sizeVal").textContent = size;
+  document.getElementById("overlapVal").textContent = overlap;
+
+  var out = document.getElementById("out");
+  out.innerHTML = "";
+  var chunks;
+  try {
+    chunks = chunkText(text, size, overlap);
+  } catch (e) {
+    document.getElementById("count").textContent = "参数错误：" + e.message;
+    return;
+  }
+  document.getElementById("count").textContent =
+    "共 " + chunks.length + " 块（原文 " + text.length + " 字符）";
+
+  chunks.forEach(function (c, i) {
+    var div = document.createElement("div");
+    div.className = "chunk";
+    div.style.background = PALETTE[i % PALETTE.length];
+    var html = '<div class="meta">块 ' + i +
+      ' <span class="badge">[' + c.start + ':' + c.end + ']</span>' +
+      ' 长度 ' + (c.end - c.start) + '</div>';
+    var before = c.text.slice(0, c.overlapStart - c.start);
+    var ov = c.text.slice(c.overlapStart - c.start);
+    html += escapeHtml(before);
+    if (ov.length > 0) html += '<span class="ovl" title="与下一块重叠">' + escapeHtml(ov) + '</span>';
+    div.innerHTML = html;
+    out.appendChild(div);
+  });
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>\"]/g, function (ch) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch];
+  });
+}
+
+document.getElementById("text").value =
+  "向量检索把文本映射到高维空间，再用余弦相似度衡量语义接近程度。" +
+  "TF-IDF 由词频和逆文档频率相乘，衡量一个词对文档的重要性。" +
+  "做文档问答时先把长文档切分成固定大小的片段，并保留重叠以保持上下文连贯。";
+document.getElementById("renderBtn").addEventListener("click", render);
+["size", "overlap"].forEach(function (id) {
+  document.getElementById(id).addEventListener("input", render);
+});
+render();
+</script>
+</body>
+</html>
